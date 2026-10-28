@@ -120,6 +120,7 @@ impl Collection {
 
         // Remove collection from object server
         object_server.remove::<Collection, _>(&self.path).await?;
+        self.remove_alias_path(&self.alias().await).await;
 
         // Notify service to remove from collections list
         self.service.remove_collection(&self.path).await;
@@ -393,6 +394,10 @@ impl Collection {
     ) -> zbus::Result<()>;
 }
 
+fn alias_path(alias: &str) -> Option<OwnedObjectPath> {
+    OwnedObjectPath::try_from(format!("/org/freedesktop/secrets/aliases/{alias}")).ok()
+}
+
 impl Collection {
     pub async fn new(label: &str, alias: &str, service: Service, keyring: Keyring) -> Self {
         let modified = keyring.modified_time().await;
@@ -430,7 +435,36 @@ impl Collection {
     }
 
     pub async fn set_alias(&self, alias: &str) {
-        *self.alias.lock().await = alias.to_owned();
+        let old_alias = std::mem::replace(&mut *self.alias.lock().await, alias.to_owned());
+        self.remove_alias_path(&old_alias).await;
+
+        // The alias path serves this collection now, whichever one it served
+        // before
+        if let Some(path) = alias_path(alias) {
+            let object_server = self.service.object_server();
+            let _ = object_server.remove::<Collection, _>(&path).await;
+            if let Err(err) = object_server.at(&path, self.clone()).await {
+                tracing::warn!(
+                    "Failed to serve collection `{}` at `{path}`: {err}",
+                    self.path
+                );
+            }
+        }
+    }
+
+    /// Stop serving this collection at the path of `alias`
+    async fn remove_alias_path(&self, alias: &str) {
+        let Some(path) = alias_path(alias) else {
+            return;
+        };
+        let object_server = self.service.object_server();
+        let serves_self = match object_server.interface::<_, Collection>(&path).await {
+            Ok(collection) => collection.get().await.path == self.path,
+            Err(_) => false,
+        };
+        if serves_self {
+            let _ = object_server.remove::<Collection, _>(&path).await;
+        }
     }
 
     pub async fn restore_label(&self, label: &str) {

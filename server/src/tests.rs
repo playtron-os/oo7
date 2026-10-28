@@ -2,7 +2,10 @@ use std::{collections::HashMap, fs::File, io::Write, sync::Arc};
 
 #[cfg(any(feature = "gnome_native_crypto", feature = "gnome_openssl_crypto"))]
 use base64::Engine;
-use oo7::{Secret, crypto, dbus};
+use oo7::{
+    Secret, crypto, dbus,
+    file::{Keyring, UnlockedKeyring},
+};
 use rustix::net::{AddressFamily, SocketFlags, SocketType, socketpair};
 use tokio_stream::StreamExt;
 use zbus::zvariant::{Fd, ObjectPath, Optional, Value};
@@ -239,11 +242,34 @@ impl TestServiceSetup {
     pub(crate) async fn with_disk_keyrings(
         secret: Option<Secret>,
     ) -> Result<TestServiceSetup, Box<dyn std::error::Error>> {
+        let service = crate::Service::default();
+        let discovered = service.discover_keyrings(secret.clone()).await?;
+        Self::with_keyrings(service, discovered, secret).await
+    }
+
+    /// Create a test setup serving a Login keyring stored at `path`
+    pub(crate) async fn with_keyring_file(
+        path: &std::path::Path,
+        secret: Secret,
+    ) -> Result<TestServiceSetup, Box<dyn std::error::Error>> {
+        let keyring = UnlockedKeyring::load(path, secret.clone()).await?;
+        keyring.write().await?;
+        let login = (
+            "Login".to_owned(),
+            oo7::dbus::Service::DEFAULT_COLLECTION.to_owned(),
+            Keyring::Unlocked(keyring),
+        );
+        Self::with_keyrings(crate::Service::default(), vec![login], Some(secret)).await
+    }
+
+    async fn with_keyrings(
+        service: Service,
+        keyrings: Vec<(String, String, Keyring)>,
+        secret: Option<Secret>,
+    ) -> Result<TestServiceSetup, Box<dyn std::error::Error>> {
         use zbus::proxy::Defaults;
 
         let (server_conn, client_conn) = create_p2p_connection().await?;
-
-        let service = crate::Service::default();
 
         server_conn
             .object_server()
@@ -253,8 +279,7 @@ impl TestServiceSetup {
             )
             .await?;
 
-        let discovered = service.discover_keyrings(secret.clone()).await?;
-        service.initialize(server_conn, discovered, false).await?;
+        service.initialize(server_conn, keyrings, false).await?;
 
         #[cfg(any(feature = "gnome_native_crypto", feature = "gnome_openssl_crypto"))]
         let mock_prompter = {

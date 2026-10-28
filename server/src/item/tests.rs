@@ -588,3 +588,105 @@ async fn locked_item_operations() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+fn login_password() -> oo7::Secret {
+    oo7::Secret::from("test-password-long-enough")
+}
+
+/// Serve a Login keyring file in `dir` holding "Other Item", then "Test Item",
+/// whose attributes are a subset of the other's. Returns the test item and the
+/// other item as stored.
+async fn with_stored_items(
+    dir: &tempfile::TempDir,
+) -> Result<(TestServiceSetup, dbus::api::Item, oo7::file::UnlockedItem), Box<dyn std::error::Error>>
+{
+    let setup =
+        TestServiceSetup::with_keyring_file(&dir.path().join("login.keyring"), login_password())
+            .await?;
+    let collection = setup.default_collection().await?;
+
+    let other_secret = dbus::api::DBusSecret::new(
+        Arc::clone(&setup.session),
+        oo7::Secret::text("other-secret"),
+    );
+    collection
+        .create_item(
+            "Other Item",
+            &[("app", "test"), ("user", "other")],
+            &other_secret,
+            false,
+            None,
+        )
+        .await?;
+    let secret =
+        dbus::api::DBusSecret::new(Arc::clone(&setup.session), oo7::Secret::text("test-secret"));
+    let item = collection
+        .create_item("Test Item", &[("app", "test")], &secret, false, None)
+        .await?;
+
+    let other = stored_items(dir).await?.remove(0);
+    Ok((setup, item, other))
+}
+
+/// The items of the Login keyring file in `dir`, as a restarted daemon reads them
+async fn stored_items(
+    dir: &tempfile::TempDir,
+) -> Result<Vec<oo7::file::UnlockedItem>, Box<dyn std::error::Error>> {
+    let keyring =
+        oo7::file::UnlockedKeyring::load(dir.path().join("login.keyring"), login_password())
+            .await?;
+    let mut items = Vec::new();
+    for item in keyring.items().await? {
+        items.push(item?.as_unlocked().clone());
+    }
+    Ok(items)
+}
+
+#[tokio::test]
+async fn set_label_persists() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::TempDir::new()?;
+    let (_setup, item, other) = with_stored_items(&dir).await?;
+
+    item.set_label("New Label").await?;
+
+    let items = stored_items(&dir).await?;
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0], other, "The other item should be unchanged");
+    assert_eq!(items[1].label(), "New Label");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn set_attributes_persists() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::TempDir::new()?;
+    let (_setup, item, other) = with_stored_items(&dir).await?;
+
+    item.set_attributes(&[("app", "updated")]).await?;
+
+    let items = stored_items(&dir).await?;
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0], other, "The other item should be unchanged");
+    assert_eq!(items[1].label(), "Test Item");
+    assert_eq!(items[1].attributes().get("app").unwrap(), "updated");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn set_secret_persists() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::TempDir::new()?;
+    let (setup, item, other) = with_stored_items(&dir).await?;
+
+    let new_secret =
+        dbus::api::DBusSecret::new(Arc::clone(&setup.session), oo7::Secret::text("new-secret"));
+    item.set_secret(&new_secret).await?;
+
+    let items = stored_items(&dir).await?;
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0], other, "The other item should be unchanged");
+    assert_eq!(items[1].label(), "Test Item");
+    assert_eq!(items[1].secret().as_bytes(), b"new-secret");
+
+    Ok(())
+}

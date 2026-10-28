@@ -327,6 +327,13 @@ impl Collection {
 
         *self.label.lock().await = label.to_owned();
 
+        let collections = self.service.collections.lock().await;
+        self.service
+            .write_collections_file(&collections)
+            .await
+            .map_err(|err| zbus::Error::FDO(Box::new(zbus::fdo::Error::Failed(err.to_string()))))?;
+        drop(collections);
+
         self.update_modified()
             .await
             .map_err(|err| zbus::Error::FDO(Box::new(zbus::fdo::Error::Failed(err.to_string()))))?;
@@ -424,6 +431,10 @@ impl Collection {
 
     pub async fn set_alias(&self, alias: &str) {
         *self.alias.lock().await = alias.to_owned();
+    }
+
+    pub async fn restore_label(&self, label: &str) {
+        *self.label.lock().await = label.to_owned();
     }
 
     pub async fn alias(&self) -> String {

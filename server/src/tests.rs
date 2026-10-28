@@ -244,7 +244,7 @@ impl TestServiceSetup {
     ) -> Result<TestServiceSetup, Box<dyn std::error::Error>> {
         let service = crate::Service::default();
         let discovered = service.discover_keyrings(secret.clone()).await?;
-        Self::with_keyrings(service, discovered, secret).await
+        Self::with_keyrings(service, discovered, secret, false).await
     }
 
     /// Create a test setup serving a Login keyring stored at `path`
@@ -259,13 +259,33 @@ impl TestServiceSetup {
             oo7::dbus::Service::DEFAULT_COLLECTION.to_owned(),
             Keyring::Unlocked(keyring),
         );
-        Self::with_keyrings(crate::Service::default(), vec![login], Some(secret)).await
+        Self::with_keyrings(crate::Service::default(), vec![login], Some(secret), false).await
+    }
+
+    /// Start a service on the keyrings in `data_dir`, as the daemon does after
+    /// a restart, with an empty Login keyring stored there first if missing
+    pub(crate) async fn with_data_dir(
+        data_dir: &std::path::Path,
+        secret: Secret,
+    ) -> Result<TestServiceSetup, Box<dyn std::error::Error>> {
+        let login = data_dir.join("keyrings/v1/login.keyring");
+        if !login.exists() {
+            UnlockedKeyring::load(&login, secret.clone())
+                .await?
+                .write()
+                .await?;
+        }
+        unsafe { std::env::set_var("XDG_DATA_HOME", data_dir) };
+        let service = crate::Service::default();
+        let discovered = service.discover_keyrings(Some(secret.clone())).await?;
+        Self::with_keyrings(service, discovered, Some(secret), true).await
     }
 
     async fn with_keyrings(
         service: Service,
         keyrings: Vec<(String, String, Keyring)>,
         secret: Option<Secret>,
+        auto_create_default: bool,
     ) -> Result<TestServiceSetup, Box<dyn std::error::Error>> {
         use zbus::proxy::Defaults;
 
@@ -279,7 +299,9 @@ impl TestServiceSetup {
             )
             .await?;
 
-        service.initialize(server_conn, keyrings, false).await?;
+        service
+            .initialize(server_conn, keyrings, auto_create_default)
+            .await?;
 
         #[cfg(any(feature = "gnome_native_crypto", feature = "gnome_openssl_crypto"))]
         let mock_prompter = {

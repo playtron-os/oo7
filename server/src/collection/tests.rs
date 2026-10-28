@@ -772,3 +772,31 @@ async fn locked_collection_operations() -> Result<(), Box<dyn std::error::Error>
 
     Ok(())
 }
+
+#[tokio::test]
+#[serial_test::serial(xdg_env)]
+async fn set_label_persists() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let password = oo7::Secret::from("test-password-long-enough");
+    let setup = TestServiceSetup::with_data_dir(dir.path(), password.clone()).await?;
+    let collection = setup
+        .service_api
+        .read_alias("default")
+        .await?
+        .expect("Default collection should exist");
+    let path = collection.inner().path().to_string();
+
+    collection.set_label("Personal").await?;
+    drop(setup);
+
+    let setup = TestServiceSetup::with_data_dir(dir.path(), password).await?;
+    let collection = setup
+        .service_api
+        .read_alias("default")
+        .await?
+        .expect("Default collection should exist");
+    assert_eq!(collection.inner().path().as_str(), path);
+    assert_eq!(collection.label().await?, "Personal");
+
+    Ok(())
+}

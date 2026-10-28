@@ -1341,3 +1341,110 @@ async fn discover_v0_keyrings() -> Result<(), Box<dyn std::error::Error>> {
     unsafe { std::env::remove_var("XDG_DATA_HOME") };
     Ok(())
 }
+
+fn login_password() -> Secret {
+    Secret::from("test-password-long-enough")
+}
+
+async fn set_alias_persists() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let setup = TestServiceSetup::with_data_dir(dir.path(), login_password()).await?;
+    setup
+        .service_api
+        .create_collection("Work Stuff", Some("work"), None)
+        .await?;
+    drop(setup);
+
+    let setup = TestServiceSetup::with_data_dir(dir.path(), login_password()).await?;
+    let collection = setup
+        .service_api
+        .read_alias("work")
+        .await?
+        .expect("Alias should survive a restart");
+    // 0.6.0 keeps the case of the label in the object path, so it changes here
+    let path = collection.inner().path().to_string();
+    assert_eq!(collection.label().await?, "Work Stuff");
+
+    setup.service_api.set_alias("default", &collection).await?;
+    drop(setup);
+
+    let setup = TestServiceSetup::with_data_dir(dir.path(), login_password()).await?;
+    let default_collection = setup
+        .service_api
+        .read_alias("default")
+        .await?
+        .expect("Default alias should survive a restart");
+    assert_eq!(default_collection.inner().path().as_str(), path);
+    assert!(setup.service_api.read_alias("work").await?.is_none());
+    // Login, Work Stuff and session
+    assert_eq!(setup.collections.len(), 3);
+    let login = setup
+        .server
+        .collection_from_path(&ObjectPath::from_static_str_unchecked(
+            "/org/freedesktop/secrets/collection/Login",
+        ))
+        .await
+        .expect("Login collection should exist");
+    assert_eq!(login.alias().await, "");
+
+    Ok(())
+}
+
+gnome_prompter_test!(
+    set_alias_persists_gnome,
+    set_alias_persists,
+    serial_test::serial(xdg_env)
+);
+
+#[tokio::test]
+#[serial_test::serial(xdg_env)]
+async fn remove_alias_persists() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let setup = TestServiceSetup::with_data_dir(dir.path(), login_password()).await?;
+
+    setup
+        .service_api
+        .inner()
+        .call_method(
+            "SetAlias",
+            &("default", ObjectPath::from_static_str_unchecked("/")),
+        )
+        .await?;
+    assert!(setup.service_api.read_alias("default").await?.is_none());
+    drop(setup);
+
+    let setup = TestServiceSetup::with_data_dir(dir.path(), login_password()).await?;
+    assert!(setup.service_api.read_alias("default").await?.is_none());
+    // The Login keyring is not opened a second time
+    assert_eq!(setup.collections.len(), 2);
+
+    Ok(())
+}
+
+async fn delete_collection_with_alias() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let setup = TestServiceSetup::with_data_dir(dir.path(), login_password()).await?;
+    let collection = setup
+        .service_api
+        .create_collection("Work", Some("work"), None)
+        .await?;
+    setup.service_api.set_alias("default", &collection).await?;
+
+    collection.delete(None).await?;
+    assert!(setup.service_api.read_alias("default").await?.is_none());
+    drop(setup);
+
+    let setup = TestServiceSetup::with_data_dir(dir.path(), login_password()).await?;
+    assert!(setup.service_api.read_alias("default").await?.is_none());
+    assert!(setup.service_api.read_alias("work").await?.is_none());
+    // Login and session
+    assert_eq!(setup.collections.len(), 2);
+
+    Ok(())
+}
+
+gnome_prompter_test!(
+    delete_collection_with_alias_gnome,
+    delete_collection_with_alias,
+    serial_test::serial(xdg_env)
+);

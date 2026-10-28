@@ -32,9 +32,6 @@ use crate::{
     session::Session,
 };
 
-const DEFAULT_COLLECTION_ALIAS_PATH: ObjectPath<'static> =
-    ObjectPath::from_static_str_unchecked("/org/freedesktop/secrets/aliases/default");
-
 #[derive(Debug, Default, Clone)]
 pub struct Service {
     // Properties
@@ -732,13 +729,7 @@ impl Service {
             object_server
                 .at(collection.path(), collection.clone())
                 .await?;
-
-            // If this is the default collection, also register it at the alias path
-            if alias == oo7::dbus::Service::DEFAULT_COLLECTION {
-                object_server
-                    .at(DEFAULT_COLLECTION_ALIAS_PATH, collection)
-                    .await?;
-            }
+            collection.serve_alias_path().await;
         }
 
         // Always create session collection (always temporary)
@@ -752,6 +743,7 @@ impl Service {
         object_server
             .at(collection.path(), collection.clone())
             .await?;
+        collection.serve_alias_path().await;
         collections.insert(collection.path().to_owned().into(), collection);
 
         drop(collections); // Release the lock
@@ -969,6 +961,7 @@ impl Service {
         self.object_server()
             .at(collection.path(), collection.clone())
             .await?;
+        collection.serve_alias_path().await;
 
         // Add to collections
         let mut collections = self.collections.lock().await;
@@ -1132,23 +1125,11 @@ impl Service {
                         continue;
                     }
 
+                    collection.serve_alias_path().await;
                     self.collections
                         .lock()
                         .await
-                        .insert(collection_path.clone(), collection.clone());
-
-                    if alias == oo7::dbus::Service::DEFAULT_COLLECTION
-                        && let Err(e) = self
-                            .object_server()
-                            .at(DEFAULT_COLLECTION_ALIAS_PATH, collection)
-                            .await
-                    {
-                        tracing::error!(
-                            "Failed to register default alias for migrated collection '{}': {}",
-                            name,
-                            e
-                        );
-                    }
+                        .insert(collection_path.clone(), collection);
 
                     if let Ok(signal_emitter) =
                         self.signal_emitter(oo7::dbus::api::Service::PATH.as_ref().unwrap())

@@ -729,7 +729,7 @@ impl Service {
             object_server
                 .at(collection.path(), collection.clone())
                 .await?;
-            collection.serve_alias_path().await;
+            collection.serve_alias_path(&alias).await;
         }
 
         // Always create session collection (always temporary)
@@ -743,7 +743,9 @@ impl Service {
         object_server
             .at(collection.path(), collection.clone())
             .await?;
-        collection.serve_alias_path().await;
+        collection
+            .serve_alias_path(oo7::dbus::Service::SESSION_COLLECTION)
+            .await;
         collections.insert(collection.path().to_owned().into(), collection);
 
         drop(collections); // Release the lock
@@ -961,7 +963,7 @@ impl Service {
         self.object_server()
             .at(collection.path(), collection.clone())
             .await?;
-        collection.serve_alias_path().await;
+        collection.serve_alias_path(&alias).await;
 
         // Add to collections
         let mut collections = self.collections.lock().await;
@@ -1125,7 +1127,7 @@ impl Service {
                         continue;
                     }
 
-                    collection.serve_alias_path().await;
+                    collection.serve_alias_path(alias).await;
                     self.collections
                         .lock()
                         .await
